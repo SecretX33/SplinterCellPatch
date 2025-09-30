@@ -41,7 +41,7 @@ BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAff
 }
 
 // DLL entry point
-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+BOOL WINAPI DllMain([[maybe_unused]] HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID lpvReserved) {
     // Skip hooking in Detours helper processes
     if (DetourIsHelperProcess()) {
         return TRUE;
