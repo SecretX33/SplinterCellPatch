@@ -1,7 +1,13 @@
 #include "library.h"
 #include <windows.h>
-#include <detours.h>
 #include <stdio.h>
+
+// Include appropriate Detours header based on architecture
+#if defined(_M_X64) || defined(__x86_64__)
+    #include "detours_x64.h"
+#else
+    #include "detours_x86.h"
+#endif
 
 // Function pointer to the original SetProcessAffinityMask
 static BOOL (WINAPI* TrueSetProcessAffinityMask)(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) = SetProcessAffinityMask;
@@ -67,6 +73,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
                 OutputDebugStringA("[AffinityHook] ERROR: Hook removal failed");
             }
             break;
+        default:
+            OutputDebugStringA("[AffinityHook] DLL loaded, but not attaching hook. Reason: unknown fdwReason");
+            return FALSE;
     }
 
     return TRUE;

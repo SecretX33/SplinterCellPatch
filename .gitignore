@@ -40,4 +40,6 @@
 .idea
 .vs
 .vscode
-.claude
+
+# Library files
+!/lib/detours_x*.lib
