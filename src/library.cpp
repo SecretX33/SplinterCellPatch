@@ -13,7 +13,7 @@ BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAff
     // Log the interception with original mask
     sprintf_s(logBuffer, sizeof(logBuffer),
               "[AffinityHook] Intercepted SetProcessAffinityMask call - Original mask: 0x%llX",
-              (unsigned long long)dwProcessAffinityMask);
+              static_cast<unsigned long long>(dwProcessAffinityMask));
     OutputDebugStringA(logBuffer);
 
     // Override the affinity mask to use all cores
@@ -21,7 +21,7 @@ BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAff
 
     sprintf_s(logBuffer, sizeof(logBuffer),
               "[AffinityHook] Modifying mask to: 0x%llX (all cores)",
-              (unsigned long long)newMask);
+              static_cast<unsigned long long>(newMask));
     OutputDebugStringA(logBuffer);
 
     // Call the original function with modified mask

@@ -7,13 +7,5 @@ set(CMAKE_CXX_STANDARD 26)
 add_library(SplinterCellPatch SHARED src/library.cpp)
 
 # Find and link Microsoft Detours
-# User should have Detours installed or provide path via CMAKE_PREFIX_PATH
-find_path(DETOURS_INCLUDE_DIR detours.h)
-find_library(DETOURS_LIBRARY NAMES detours)
-
-if(DETOURS_INCLUDE_DIR AND DETOURS_LIBRARY)
-    target_include_directories(SplinterCellPatch PRIVATE ${DETOURS_INCLUDE_DIR})
-    target_link_libraries(SplinterCellPatch PRIVATE ${DETOURS_LIBRARY})
-else()
-    message(WARNING "Detours not found. Install Detours or set CMAKE_PREFIX_PATH")
-endif()
+find_package(Detours CONFIG REQUIRED)
+target_link_libraries(SplinterCellPatch PRIVATE Microsoft.Detours::Detours)
