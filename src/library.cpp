@@ -49,7 +49,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             DetourRestoreAfterWith();
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&(PVOID&)TrueSetProcessAffinityMask, HookedSetProcessAffinityMask);
+            DetourAttach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
 
             if (DetourTransactionCommit() == NO_ERROR) {
                 OutputDebugStringA("[AffinityHook] Hook installed successfully");
@@ -65,7 +65,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             // Remove the hook
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            DetourDetach(&(PVOID&)TrueSetProcessAffinityMask, HookedSetProcessAffinityMask);
+            DetourDetach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
 
             if (DetourTransactionCommit() == NO_ERROR) {
                 OutputDebugStringA("[AffinityHook] Hook removed successfully");
