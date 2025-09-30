@@ -9,6 +9,12 @@
     #include "detours_x86.h"
 #endif
 
+// Dummy export function for DLL injectors that require at least one export
+extern "C" __declspec(dllexport) void DummyExport() {
+    // This function exists solely to satisfy DLL injectors
+    // It is never called
+}
+
 // Function pointer to the original SetProcessAffinityMask
 static BOOL (WINAPI* TrueSetProcessAffinityMask)(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) = SetProcessAffinityMask;
 
@@ -73,6 +79,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
                 OutputDebugStringA("[AffinityHook] ERROR: Hook removal failed");
             }
             break;
+
         default:
             OutputDebugStringA("[AffinityHook] DLL loaded, but not attaching hook. Reason: unknown fdwReason");
             return FALSE;
