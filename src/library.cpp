@@ -17,6 +17,7 @@ extern "C" __declspec(dllexport) void DummyExport() {
 
 // Function pointer to the original SetProcessAffinityMask
 static BOOL (WINAPI* TrueSetProcessAffinityMask)(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) = SetProcessAffinityMask;
+static BOOL (WINAPI* TrueFreeLibrary)(HMODULE hLibModule) = FreeLibrary;
 
 // Hooked version of SetProcessAffinityMask
 BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) {
@@ -40,8 +41,20 @@ BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAff
     return TrueSetProcessAffinityMask(hProcess, newMask);
 }
 
+static HMODULE g_hModule = nullptr;
+
+BOOL WINAPI HookedFreeLibrary(HMODULE hModule)
+{
+    OutputDebugStringA("[AffinityHook] Intercepted FreeLibrary call");
+    if (g_hModule != nullptr && g_hModule == hModule) {
+        OutputDebugStringA("[AffinityHook] Preventing unload of my module");
+        return TRUE; // pretend success, but do not unload
+    }
+    return TrueFreeLibrary(hModule);
+}
+
 // DLL entry point
-BOOL WINAPI DllMain([[maybe_unused]] HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID lpvReserved) {
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID lpvReserved) {
     // Skip hooking in Detours helper processes
     if (DetourIsHelperProcess()) {
         return TRUE;
@@ -50,12 +63,25 @@ BOOL WINAPI DllMain([[maybe_unused]] HINSTANCE hinstDLL, DWORD fdwReason, [[mayb
     switch (fdwReason) {
         case DLL_PROCESS_ATTACH:
             OutputDebugStringA("[AffinityHook] DLL loaded, installing hook...");
+            DisableThreadLibraryCalls(hinstDLL);
+
+            g_hModule = hinstDLL;
+
+            // Prevent DLL from being unloaded by incrementing reference count
+            HMODULE hModule;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                   reinterpret_cast<LPCWSTR>(hinstDLL), &hModule)) {
+                OutputDebugStringA("[AffinityHook] DLL pinned in memory");
+            } else {
+                OutputDebugStringA("[AffinityHook] WARNING: Failed to pin DLL in memory");
+            }
 
             // Install the hook
             DetourRestoreAfterWith();
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
             DetourAttach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
+            DetourAttach(reinterpret_cast<PVOID*>(&TrueFreeLibrary), reinterpret_cast<PVOID>(HookedFreeLibrary));
 
             if (DetourTransactionCommit() == NO_ERROR) {
                 OutputDebugStringA("[AffinityHook] Hook installed successfully");
@@ -72,6 +98,7 @@ BOOL WINAPI DllMain([[maybe_unused]] HINSTANCE hinstDLL, DWORD fdwReason, [[mayb
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
             DetourDetach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
+            DetourDetach(reinterpret_cast<PVOID*>(&TrueFreeLibrary), reinterpret_cast<PVOID>(HookedFreeLibrary));
 
             if (DetourTransactionCommit() == NO_ERROR) {
                 OutputDebugStringA("[AffinityHook] Hook removed successfully");
