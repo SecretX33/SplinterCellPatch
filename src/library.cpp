@@ -2,7 +2,6 @@
 #include <windows.h>
 #include <stdio.h>
 
-// Include appropriate Detours header based on architecture
 #if defined(_M_X64) || defined(__x86_64__)
     #include "detours_x64.h"
 #else
@@ -14,12 +13,11 @@ extern "C" __declspec(dllexport) void DummyExport() {
     // This function exists solely to satisfy DLL injectors
     // It is never called
     OutputDebugStringA("[AffinityHook] DummyExport called - this should never happen!");
-    Sleep(INFINITE);
 }
 
 static HMODULE g_hModule = nullptr;
 
-// Function pointer to the original SetProcessAffinityMask
+// Pointers to the original functions
 typedef BOOL (WINAPI *PFN_SetProcessAffinityMask)(HANDLE, DWORD_PTR);
 static PFN_SetProcessAffinityMask Real_SetProcessAffinityMask = nullptr;
 
@@ -183,7 +181,6 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
                 OutputDebugStringA("[AffinityHook] WARNING: Failed to pin DLL in memory");
             }
 
-            // Install the hook
             if (!InstallHook()) {
                 return FALSE;
             }
