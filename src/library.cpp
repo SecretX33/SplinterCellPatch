@@ -1,12 +1,15 @@
 #include "library.h"
 #include <windows.h>
-#include <stdio.h>
+#include <format>
+#include <string>
 
 #if defined(_M_X64) || defined(__x86_64__)
-    #include "detours_x64.h"
+#include "detours_x64.h"
 #else
-    #include "detours_x86.h"
+#include "detours_x86.h"
 #endif
+
+inline constexpr DWORD_PTR ALL_CORES_MASK = 0xFFFFFFFFFFFFFFFF;
 
 // Dummy export function for DLL injectors that require at least one export
 extern "C" __declspec(dllexport) void DummyExport() {
@@ -17,46 +20,54 @@ extern "C" __declspec(dllexport) void DummyExport() {
 
 static HMODULE g_hModule = nullptr;
 
-// Pointers to the original functions
 typedef BOOL (WINAPI *PFN_SetProcessAffinityMask)(HANDLE, DWORD_PTR);
 static PFN_SetProcessAffinityMask Real_SetProcessAffinityMask = nullptr;
 
 typedef BOOL (WINAPI *PFN_FreeLibrary)(HMODULE hModule);
 static PFN_FreeLibrary Real_FreeLibrary = nullptr;
 
-// Hooked version of SetProcessAffinityMask
 BOOL WINAPI Hooked_SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) {
-    char logBuffer[256];
+    if (hProcess == nullptr || hProcess == INVALID_HANDLE_VALUE) {
+        OutputDebugStringA("[AffinityHook] Invalid hProcess handle detected");
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+
+    // Preserve caller's error state
+    DWORD lastError = GetLastError();
 
     // Log the interception with original mask
-    sprintf_s(logBuffer, sizeof(logBuffer),
-              "[AffinityHook] Intercepted SetProcessAffinityMask call - Original mask: 0x%llX",
-              static_cast<unsigned long long>(dwProcessAffinityMask));
-    OutputDebugStringA(logBuffer);
+    std::string logMsg = std::format(
+        "[AffinityHook] Intercepted SetProcessAffinityMask call - Original mask: 0x{:X}",
+        dwProcessAffinityMask
+    );
+    OutputDebugStringA(logMsg.c_str());
 
     // Override the affinity mask to use all cores
-    DWORD_PTR newMask = 0xFFFFFFFFFFFFFFFF;
+    logMsg = std::format(
+        "[AffinityHook] Modifying mask to: 0x{:X} (all cores)",
+        ALL_CORES_MASK
+    );
+    OutputDebugStringA(logMsg.c_str());
 
-    sprintf_s(logBuffer, sizeof(logBuffer),
-              "[AffinityHook] Modifying mask to: 0x%llX (all cores)",
-              static_cast<unsigned long long>(newMask));
-    OutputDebugStringA(logBuffer);
+    // Restore error state before calling original function
+    SetLastError(lastError);
 
     // Call the original function with modified mask
-    return Real_SetProcessAffinityMask(hProcess, newMask);
+    return Real_SetProcessAffinityMask(hProcess, ALL_CORES_MASK);
 }
 
-BOOL WINAPI Hooked_FreeLibrary(HMODULE hModule)
-{
+BOOL WINAPI Hooked_FreeLibrary(HMODULE hModule) {
     OutputDebugStringA("[AffinityHook] Intercepted FreeLibrary call");
     if (g_hModule != nullptr && g_hModule == hModule) {
         OutputDebugStringA("[AffinityHook] Preventing unload of my module");
+        SetLastError(ERROR_SUCCESS);
         return TRUE; // pretend success, but do not unload
     }
     return Real_FreeLibrary(hModule);
 }
 
-bool LoadFunctionReferences() {
+[[nodiscard]] bool LoadFunctionReferences() {
     OutputDebugStringA("[AffinityHook] Loading references to original functions...");
 
     HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
@@ -80,78 +91,113 @@ bool LoadFunctionReferences() {
     return true;
 }
 
-BOOL InstallHook() {
+[[nodiscard]] bool InstallHook() {
+    if (!Real_SetProcessAffinityMask || !Real_FreeLibrary) {
+        OutputDebugStringA("[AffinityHook] ERROR: Function pointers not initialized");
+        return false;
+    }
+
     DWORD error = NO_ERROR;
 
     error = DetourRestoreAfterWith();
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourRestoreAfterWith failed");
-        return FALSE;
+        std::string errorMsg = std::format("[AffinityHook] DetourRestoreAfterWith failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
     }
 
     error = DetourTransactionBegin();
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourTransactionBegin failed");
-        return FALSE;
+        std::string errorMsg = std::format("[AffinityHook] DetourTransactionBegin failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
     }
     error = DetourUpdateThread(GetCurrentThread());
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourUpdateThread failed");
+        std::string errorMsg = std::format("[AffinityHook] DetourUpdateThread failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
         DetourTransactionAbort();
-        return FALSE;
+        return false;
     }
 
-    error = DetourAttach(reinterpret_cast<PVOID*>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
-    if (error == NO_ERROR) error = DetourAttach(reinterpret_cast<PVOID*>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
+    error = DetourAttach(reinterpret_cast<PVOID *>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
+    if (error == NO_ERROR) error = DetourAttach(reinterpret_cast<PVOID *>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
 
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourAttach failed");
+        std::string errorMsg = std::format("[AffinityHook] DetourAttach failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
         DetourTransactionAbort();
-        return FALSE;
+        return false;
     }
 
     error = DetourTransactionCommit();
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] ERROR: Hook installation failed");
-        return FALSE;
+        std::string errorMsg = std::format("[AffinityHook] ERROR: Hook installation failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
     }
 
     OutputDebugStringA("[AffinityHook] Hook installed successfully");
-    return TRUE;
+    return true;
 }
 
-BOOL UninstallHook() {
+[[nodiscard]] bool UninstallHook() {
     DWORD error = NO_ERROR;
+
     error = DetourTransactionBegin();
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourTransactionBegin failed");
-        return FALSE;
+        std::string errorMsg = std::format("[AffinityHook] DetourTransactionBegin failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
     }
 
     error = DetourUpdateThread(GetCurrentThread());
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourUpdateThread failed");
+        std::string errorMsg = std::format("[AffinityHook] DetourUpdateThread failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
         DetourTransactionAbort();
-        return FALSE;
+        return false;
     }
 
-    error = DetourDetach(reinterpret_cast<PVOID*>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
-    if (error == NO_ERROR) DetourDetach(reinterpret_cast<PVOID*>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
+    error = DetourDetach(reinterpret_cast<PVOID *>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
+    if (error == NO_ERROR) {
+        error = DetourDetach(reinterpret_cast<PVOID *>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
+    }
 
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] DetourDetach failed");
+        std::string errorMsg = std::format("[AffinityHook] DetourDetach failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
         DetourTransactionAbort();
-        return FALSE;
+        return false;
     }
 
     error = DetourTransactionCommit();
     if (error != NO_ERROR) {
-        OutputDebugStringA("[AffinityHook] ERROR: Hook uninstall failed");
-        return FALSE;
+        std::string errorMsg = std::format("[AffinityHook] ERROR: Hook uninstall failed with error: 0x{:X}", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
     }
 
     OutputDebugStringA("[AffinityHook] Hook uninstalled successfully");
-    return TRUE;
+    return true;
+}
+
+bool PinDllToMemory(LPCWSTR lpModuleName) {
+    // Prevent DLL from being unloaded by incrementing reference count
+    HMODULE hModule;
+    const BOOL success = GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        lpModuleName, &hModule
+    );
+    if (!success) {
+        DWORD error = GetLastError();
+        std::string errorMsg = std::format("[AffinityHook] CRITICAL: Failed to pin DLL in memory (error: 0x{:X})", error);
+        OutputDebugStringA(errorMsg.c_str());
+        return false;
+    }
+    OutputDebugStringA("[AffinityHook] DLL pinned in memory");
+
+    return true;
 }
 
 // DLL entry point
@@ -163,8 +209,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
 
     switch (fdwReason) {
         case DLL_PROCESS_ATTACH:
-            OutputDebugStringA("[AffinityHook] DLL loaded, installing hook...");
             DisableThreadLibraryCalls(hinstDLL);
+            OutputDebugStringA("[AffinityHook] DLL loaded, installing hook...");
 
             g_hModule = hinstDLL;
 
@@ -172,13 +218,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
                 return FALSE;
             }
 
-            // Prevent DLL from being unloaded by incrementing reference count
-            HMODULE hModule;
-            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                                   reinterpret_cast<LPCWSTR>(hinstDLL), &hModule)) {
-                OutputDebugStringA("[AffinityHook] DLL pinned in memory");
-            } else {
-                OutputDebugStringA("[AffinityHook] WARNING: Failed to pin DLL in memory");
+            if (!PinDllToMemory(reinterpret_cast<LPCWSTR>(hinstDLL))) {
+                return FALSE;
             }
 
             if (!InstallHook()) {
@@ -194,9 +235,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
             }
             break;
 
+        case DLL_THREAD_ATTACH:
+        case DLL_THREAD_DETACH:
+            // These should not occur due to DisableThreadLibraryCalls, but handle gracefully
+            break;
+
         default:
-            OutputDebugStringA("[AffinityHook] DLL loaded, but not attaching hook. Reason: unknown fdwReason");
-            return FALSE;
+            OutputDebugStringA("[AffinityHook] DLL event with unknown fdwReason - ignoring");
+            break;
     }
 
     return TRUE;
