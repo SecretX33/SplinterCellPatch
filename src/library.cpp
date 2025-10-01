@@ -13,14 +13,21 @@
 extern "C" __declspec(dllexport) void DummyExport() {
     // This function exists solely to satisfy DLL injectors
     // It is never called
+    OutputDebugStringA("[AffinityHook] DummyExport called - this should never happen!");
+    Sleep(INFINITE);
 }
 
+static HMODULE g_hModule = nullptr;
+
 // Function pointer to the original SetProcessAffinityMask
-static BOOL (WINAPI* TrueSetProcessAffinityMask)(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) = SetProcessAffinityMask;
-static BOOL (WINAPI* TrueFreeLibrary)(HMODULE hLibModule) = FreeLibrary;
+typedef BOOL (WINAPI *PFN_SetProcessAffinityMask)(HANDLE, DWORD_PTR);
+static PFN_SetProcessAffinityMask Real_SetProcessAffinityMask = nullptr;
+
+typedef BOOL (WINAPI *PFN_FreeLibrary)(HMODULE hModule);
+static PFN_FreeLibrary Real_FreeLibrary = nullptr;
 
 // Hooked version of SetProcessAffinityMask
-BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) {
+BOOL WINAPI Hooked_SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask) {
     char logBuffer[256];
 
     // Log the interception with original mask
@@ -38,19 +45,115 @@ BOOL WINAPI HookedSetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAff
     OutputDebugStringA(logBuffer);
 
     // Call the original function with modified mask
-    return TrueSetProcessAffinityMask(hProcess, newMask);
+    return Real_SetProcessAffinityMask(hProcess, newMask);
 }
 
-static HMODULE g_hModule = nullptr;
-
-BOOL WINAPI HookedFreeLibrary(HMODULE hModule)
+BOOL WINAPI Hooked_FreeLibrary(HMODULE hModule)
 {
     OutputDebugStringA("[AffinityHook] Intercepted FreeLibrary call");
     if (g_hModule != nullptr && g_hModule == hModule) {
         OutputDebugStringA("[AffinityHook] Preventing unload of my module");
         return TRUE; // pretend success, but do not unload
     }
-    return TrueFreeLibrary(hModule);
+    return Real_FreeLibrary(hModule);
+}
+
+bool LoadFunctionReferences() {
+    OutputDebugStringA("[AffinityHook] Loading references to original functions...");
+
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    if (!hKernel32) {
+        OutputDebugStringA("[AffinityHook] GetModuleHandleA(kernel32) failed");
+        return false;
+    }
+
+    Real_SetProcessAffinityMask = reinterpret_cast<PFN_SetProcessAffinityMask>(GetProcAddress(hKernel32, "SetProcessAffinityMask"));
+    if (!Real_SetProcessAffinityMask) {
+        OutputDebugStringA("[AffinityHook] GetProcAddress(SetProcessAffinityMask) failed");
+        return false;
+    }
+
+    Real_FreeLibrary = reinterpret_cast<PFN_FreeLibrary>(GetProcAddress(hKernel32, "FreeLibrary"));
+    if (!Real_FreeLibrary) {
+        OutputDebugStringA("[AffinityHook] GetProcAddress(FreeLibrary) failed");
+        return false;
+    }
+
+    return true;
+}
+
+BOOL InstallHook() {
+    DWORD error = NO_ERROR;
+
+    error = DetourRestoreAfterWith();
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourRestoreAfterWith failed");
+        return FALSE;
+    }
+
+    error = DetourTransactionBegin();
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourTransactionBegin failed");
+        return FALSE;
+    }
+    error = DetourUpdateThread(GetCurrentThread());
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourUpdateThread failed");
+        DetourTransactionAbort();
+        return FALSE;
+    }
+
+    error = DetourAttach(reinterpret_cast<PVOID*>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
+    if (error == NO_ERROR) error = DetourAttach(reinterpret_cast<PVOID*>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
+
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourAttach failed");
+        DetourTransactionAbort();
+        return FALSE;
+    }
+
+    error = DetourTransactionCommit();
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] ERROR: Hook installation failed");
+        return FALSE;
+    }
+
+    OutputDebugStringA("[AffinityHook] Hook installed successfully");
+    return TRUE;
+}
+
+BOOL UninstallHook() {
+    DWORD error = NO_ERROR;
+    error = DetourTransactionBegin();
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourTransactionBegin failed");
+        return FALSE;
+    }
+
+    error = DetourUpdateThread(GetCurrentThread());
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourUpdateThread failed");
+        DetourTransactionAbort();
+        return FALSE;
+    }
+
+    error = DetourDetach(reinterpret_cast<PVOID*>(&Real_SetProcessAffinityMask), reinterpret_cast<PVOID>(Hooked_SetProcessAffinityMask));
+    if (error == NO_ERROR) DetourDetach(reinterpret_cast<PVOID*>(&Real_FreeLibrary), reinterpret_cast<PVOID>(Hooked_FreeLibrary));
+
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] DetourDetach failed");
+        DetourTransactionAbort();
+        return FALSE;
+    }
+
+    error = DetourTransactionCommit();
+    if (error != NO_ERROR) {
+        OutputDebugStringA("[AffinityHook] ERROR: Hook uninstall failed");
+        return FALSE;
+    }
+
+    OutputDebugStringA("[AffinityHook] Hook uninstalled successfully");
+    return TRUE;
 }
 
 // DLL entry point
@@ -67,6 +170,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
 
             g_hModule = hinstDLL;
 
+            if (!LoadFunctionReferences()) {
+                return FALSE;
+            }
+
             // Prevent DLL from being unloaded by incrementing reference count
             HMODULE hModule;
             if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -77,16 +184,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
             }
 
             // Install the hook
-            DetourRestoreAfterWith();
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
-            DetourAttach(reinterpret_cast<PVOID*>(&TrueFreeLibrary), reinterpret_cast<PVOID>(HookedFreeLibrary));
-
-            if (DetourTransactionCommit() == NO_ERROR) {
-                OutputDebugStringA("[AffinityHook] Hook installed successfully");
-            } else {
-                OutputDebugStringA("[AffinityHook] ERROR: Hook installation failed");
+            if (!InstallHook()) {
                 return FALSE;
             }
             break;
@@ -94,16 +192,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, [[maybe_unused]] LPVOID
         case DLL_PROCESS_DETACH:
             OutputDebugStringA("[AffinityHook] DLL unloading, removing hook...");
 
-            // Remove the hook
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourDetach(reinterpret_cast<PVOID*>(&TrueSetProcessAffinityMask), reinterpret_cast<PVOID>(HookedSetProcessAffinityMask));
-            DetourDetach(reinterpret_cast<PVOID*>(&TrueFreeLibrary), reinterpret_cast<PVOID>(HookedFreeLibrary));
-
-            if (DetourTransactionCommit() == NO_ERROR) {
-                OutputDebugStringA("[AffinityHook] Hook removed successfully");
-            } else {
-                OutputDebugStringA("[AffinityHook] ERROR: Hook removal failed");
+            if (!UninstallHook()) {
+                return FALSE;
             }
             break;
 
